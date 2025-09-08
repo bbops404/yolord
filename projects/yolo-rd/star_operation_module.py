@@ -37,6 +37,11 @@ class StarOperationModule(BaseModule):
         # This takes F_input (in_channels) and outputs F_pre_split (in_channels).
         # act_cfg=None because the diagram shows BN directly before branching,
         # and the activations are handled in the branches or later.
+        """
+        Firstly, the input feature map is processed by a Depthwise
+Convolution (DWConv1) to extract spatial features independently for each channel. The
+resulting feature map retains the same spatial dimensions H × W and channel count 
+        """
         self.dwconv1_block = ConvModule(
             in_channels=in_channels,
             out_channels=in_channels, # Output has the same number of channels
@@ -48,12 +53,14 @@ class StarOperationModule(BaseModule):
             act_cfg=None, # No activation here
             bias=False)
 
+
+
         # Star Operation Branches
         # Both branches take F_pre_split (in_channels) and expand to expanded_channels.
         # Branch 1 (Top): Conv_1x1
         self.branch1_conv = ConvModule(
             in_channels=in_channels,
-            out_channels=self.expanded_channels,
+            out_channels=self.expanded_channels, #in channels multiplied by expand ratio (3) okay n e2
             kernel_size=1,
             stride=1,
             padding=0,
@@ -64,7 +71,7 @@ class StarOperationModule(BaseModule):
         # Branch 2 (Bottom): Conv_1x1 followed by ReLU6
         self.branch2_conv = ConvModule(
             in_channels=in_channels,
-            out_channels=self.expanded_channels,
+            out_channels=self.expanded_channels, #in channels multiplied by expand ratio (3) okay n e2. pa confirm na lang e2 "introduce nonlinearity by clamping values to the range [0, 6]"".
             kernel_size=1,
             stride=1,
             padding=0,
@@ -78,7 +85,7 @@ class StarOperationModule(BaseModule):
         # Takes F_fused (expanded_channels) and reduces to in_channels for residual.
         self.reduce_conv = ConvModule(
             in_channels=self.expanded_channels,
-            out_channels=in_channels, # Reduce back to in_channels for residual connection
+            out_channels=in_channels, # Reduce back to in_channels for residual connection #pa confirm na lang na parang na reduce siya to C lang
             kernel_size=1,
             stride=1,
             padding=0,
@@ -134,7 +141,7 @@ class StarOperationModule(BaseModule):
         f_post_star_part1 = self.reduce_conv(f_fused)
         
         # Then DWConv 2 + BN
-        f_post_star_part2 = self.dwconv2_block(f_post_star_part1)
+        f_post_star_part2 = self.dwconv2_block(f_post_star_part1) #yung d2 ata dapat wala na bn(??)
 
         # Residual Connection: F_intermediate = F_post_star + F_input
         # The sum `f_post_star_part2 + identity` corresponds to `F_intermediate = DWConv 2 (BN (Conv_1x1 (F_fused))) + F_input`
