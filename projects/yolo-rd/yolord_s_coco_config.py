@@ -3,8 +3,8 @@
 # This tells MMYOLO to load your custom modules before building the model
 custom_imports = dict(
     imports=[
-        'projects.yolo-rd.star_operation_module',
-        'projects.yolo-rd.maf_pafpn_neck',
+        'projects.yolo-rd.som_backbone',
+        'projects.yolo-rd.mafpafpn',
         'projects.yolo-rd.wt_head'
     ],
     allow_failed_imports=False)
@@ -37,12 +37,9 @@ model = dict(
         std=[255., 255., 255.],
         bgr_to_rgb=True),
 
-    # --- YOLO-RD Backbone with SOM ---
-    # NOTE: To integrate SOM, the YOLOv8CSPDarknet backbone in MMYOLO would need
-    # to be modified to accept plugins. For now, we define a standard backbone,
-    # and a more advanced user would create a new 'SOM_YOLOv8CSPDarknet' class.
+
     backbone=dict(
-        type='YOLOv8CSPDarknet',
+        type='SOM_YOLOv8CSPDarknet',
         arch='P5',
         last_stage_out_channels=last_stage_out_channels,
         deepen_factor=deepen_factor,
@@ -53,46 +50,41 @@ model = dict(
     # --- YOLO-RD Neck (MAF-PAFPN) ---
     neck=dict(
         type='MAFPAFPN', # Using our custom neck
+        maf_in_channels=[64, 128, 256, 512],  # P2, P3, P4, P5 from SOM backbone
+        pafpn_out_channels=[128, 256, 512],  # Output channels for P3, P4, P5
         deepen_factor=deepen_factor,
         widen_factor=widen_factor,
-        in_channels=[256, 512, last_stage_out_channels],
-        out_channels=[256, 512, last_stage_out_channels],
-        num_csp_blocks=3,
-        norm_cfg=norm_cfg,
-        act_cfg=act_cfg),
+        num_csp_blocks=3),
 
     # --- YOLO-RD Head (WT-Head) ---
     bbox_head=dict(
-        type='WTHead', # Using our custom head container
-        head_module=dict(
-            type='WTHeadModule', # Using our custom head module
-            num_classes=num_classes,
-            in_channels=[256, 512, last_stage_out_channels],
-            widen_factor=widen_factor,
-            reg_max=16,
-            norm_cfg=norm_cfg,
-            act_cfg=act_cfg,
-            featmap_strides=[8, 16, 32]),
-        prior_generator=dict(
-            type='mmdet.MlvlPointGenerator', offset=0.5, strides=[8, 16, 32]),
-        bbox_coder=dict(type='DistancePointBBoxCoder'),
-        loss_cls=dict(
-            type='mmdet.CrossEntropyLoss',
-            use_sigmoid=True,
-            reduction='none',
-            loss_weight=0.5),
-        loss_bbox=dict(
-            type='IoULoss',
-            iou_mode='ciou',
-            bbox_format='xyxy',
-            reduction='sum',
-            loss_weight=7.5,
-            return_iou=False),
-        loss_dfl=dict(
-            type='mmdet.DistributionFocalLoss',
-            reduction='mean',
-            loss_weight=1.5 / 4)),
-
+        type='WTCHead', # Using our custom head container
+        num_classes=num_classes,
+        in_channels=[128, 256, 512],  # P3, P4, P5 from neck
+        widen_factor=widen_factor,
+        reg_max=16,
+        norm_cfg=norm_cfg,
+        act_cfg=act_cfg,
+        featmap_strides=[8, 16, 32]),  # Strides for P3, P4, P5
+    prior_generator=dict(
+        type='mmdet.MlvlPointGenerator', offset=0.5, strides=[8, 16, 32]),
+    bbox_coder=dict(type='DistancePointBBoxCoder'),
+    loss_cls=dict(
+        type='mmdet.CrossEntropyLoss',
+        use_sigmoid=True,
+        reduction='none',
+        loss_weight=0.5),
+    loss_bbox=dict(
+        type='IoULoss',
+        iou_mode='ciou',
+        bbox_format='xyxy',
+        reduction='sum',
+        loss_weight=7.5,
+        return_iou=False),
+    loss_dfl=dict(
+        type='mmdet.DistributionFocalLoss',
+        reduction='mean',
+        loss_weight=1.5 / 4),
     test_cfg=dict(
         multi_label=True,
         nms_pre=30000,

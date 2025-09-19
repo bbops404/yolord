@@ -37,11 +37,6 @@ class StarOperationModule(BaseModule):
         # This takes F_input (in_channels) and outputs F_pre_split (in_channels).
         # act_cfg=None because the diagram shows BN directly before branching,
         # and the activations are handled in the branches or later.
-        """
-        Firstly, the input feature map is processed by a Depthwise
-Convolution (DWConv1) to extract spatial features independently for each channel. The
-resulting feature map retains the same spatial dimensions H × W and channel count 
-        """
         self.dwconv1_block = ConvModule(
             in_channels=in_channels,
             out_channels=in_channels, # Output has the same number of channels
@@ -53,14 +48,12 @@ resulting feature map retains the same spatial dimensions H × W and channel cou
             act_cfg=None, # No activation here
             bias=False)
 
-
-
         # Star Operation Branches
         # Both branches take F_pre_split (in_channels) and expand to expanded_channels.
         # Branch 1 (Top): Conv_1x1
         self.branch1_conv = ConvModule(
             in_channels=in_channels,
-            out_channels=self.expanded_channels, #in channels multiplied by expand ratio (3) okay n e2
+            out_channels=self.expanded_channels,
             kernel_size=1,
             stride=1,
             padding=0,
@@ -71,7 +64,9 @@ resulting feature map retains the same spatial dimensions H × W and channel cou
         # Branch 2 (Bottom): Conv_1x1 followed by ReLU6
         self.branch2_conv = ConvModule(
             in_channels=in_channels,
-            out_channels=self.expanded_channels, #in channels multiplied by expand ratio (3) okay n e2. pa confirm na lang e2 "introduce nonlinearity by clamping values to the range [0, 6]"".
+            #out_channels=self.expanded_channels,
+            out_channels=self.expanded_channels, 
+            #in channels multiplied by expand ratio (3) okay n e2. pa confirm na lang e2 "introduce nonlinearity by clamping values to the range [0, 6]""
             kernel_size=1,
             stride=1,
             padding=0,
@@ -79,13 +74,18 @@ resulting feature map retains the same spatial dimensions H × W and channel cou
             act_cfg=None, # ReLU6 will be applied externally
             bias=False)
         self.relu6 = nn.ReLU6(inplace=True) # Explicit ReLU6 as per diagram
+        # ReLU activation function; when call it in the forward method "branch2_out=self.relu6(...)"
+        # it applies the exact clamping and nonlinearity.
+        # Mathematical definition of ReLU6 function -> min(max(0,x), 6).
+        # The '6" is built into its name and its operation.
+
 
         # Post-Star Block
         # 1. Conv_1x1 (reduction)
         # Takes F_fused (expanded_channels) and reduces to in_channels for residual.
         self.reduce_conv = ConvModule(
             in_channels=self.expanded_channels,
-            out_channels=in_channels, # Reduce back to in_channels for residual connection #pa confirm na lang na parang na reduce siya to C lang
+            out_channels=in_channels, # Reduce back to in_channels for residual connection #Produces a C channel tensor as output
             kernel_size=1,
             stride=1,
             padding=0,
@@ -102,9 +102,15 @@ resulting feature map retains the same spatial dimensions H × W and channel cou
             stride=1,
             padding=1,
             groups=in_channels, # Depthwise convolution
-            norm_cfg=norm_cfg,
+            # norm_cfg=norm_cfg, #This line INCLUDES Batch Normalization
+            norm_cfg=None, #This line REMOVES Batch Normalization
             act_cfg=None, # No activation here
             bias=False)
+        #Comment ^^ regarding the BN part
+        "Version 1 (With BN) correctly implements the diagram (Figure 3) from the paper, "
+        "which explicitly shows a BN layer.  The BN ensures that the features being refined by the DW-Conv are on a consistent scale, "
+        "which is critical for learning the spatial details of small cracks without the training becoming unstable."
+
 
         # Final Conv_1x1 (output transformation)
         # Takes F_intermediate (in_channels after residual) and outputs out_channels.
@@ -141,7 +147,7 @@ resulting feature map retains the same spatial dimensions H × W and channel cou
         f_post_star_part1 = self.reduce_conv(f_fused)
         
         # Then DWConv 2 + BN
-        f_post_star_part2 = self.dwconv2_block(f_post_star_part1) #yung d2 ata dapat wala na bn(??)
+        f_post_star_part2 = self.dwconv2_block(f_post_star_part1)
 
         # Residual Connection: F_intermediate = F_post_star + F_input
         # The sum `f_post_star_part2 + identity` corresponds to `F_intermediate = DWConv 2 (BN (Conv_1x1 (F_fused))) + F_input`

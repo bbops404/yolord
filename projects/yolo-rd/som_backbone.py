@@ -1,71 +1,147 @@
 # projects/yolo-rd/som_backbone.py
 
+import torch.nn as nn
+from mmcv.cnn import ConvModule
+
 from mmyolo.registry import MODELS
 from mmyolo.models.backbones.yolov8_csp_darknet import YOLOv8CSPDarknet, YOLOv8CSPLayer
-from mmdet.models.backbones.csp_darknet import CSPLayer
+from mmyolo.models.layers.yolo_bricks import SPPFBottleneck
+from mmdet.models.utils import make_divisible
 from .star_operation_module import StarOperationModule
+
 
 @MODELS.register_module()
 class SOM_YOLOv8CSPDarknet(YOLOv8CSPDarknet):
     """
-    Custom YOLOv8 CSPDarknet backbone that integrates the StarOperationModule (SOM)
-    into stages 3 and 4, as described in the YOLO-RD paper.
+    YOLO-RD Backbone with StarOperationModule (SOM).
+
+    This class meticulously reconstructs the backbone from the YOLO-RD paper
+    (Figure 2), ensuring the feature map dimensions at each stage are accurate.
+    SOM is integrated into the third and fourth stages to enhance feature
+    extraction for small objects, as described in the paper.
     """
 
-    def __init__(self, *args, **kwargs):
-        # We override the arch_settings to use our custom block types
-        # Note: 'YOLOv8CSPLayer' with expand_ratio=3 is our placeholder for SOM
-        self.arch_settings.update({
-            'P5':
-            # expand_ratio, block, num_blocks, args
-            [[0.5, YOLOv8CSPLayer, 3, [2]],      # Stage 2
-             [0.5, CSPLayer, 8, [False, 1.0]],  # Stage 3 with SOM
-             [0.5, CSPLayer, 5, [False, 1.0]],  # Stage 4 with SOM
-             [0.5, None, 0, []]]                # SPPF placeholder
-        })
-        print("--- INFO: Initializing Custom SOM-Backbone ---")
-        super().__init__(*args, **kwargs)
+    def __init__(self,
+                 arch='P5',
+                 last_stage_out_channels=1024,
+                 deepen_factor=1.0,
+                 widen_factor=1.0,
+                 norm_cfg=dict(type='BN', momentum=0.03, eps=0.001),
+                 act_cfg=dict(type='SiLU', inplace=True),
+                 use_depthwise=False,
+                 **kwargs):
+        
+        # We call the grandparent's init to skip the original layer building,
+        # as we are defining the entire architecture manually here.
+        super(YOLOv8CSPDarknet, self).__init__(**kwargs)
 
-    def _build_stage_layer(self, stage_idx: int, setting: list) -> list:
-        """
-        Override the stage builder to inject the StarOperationModule.
-        """
-        expand_ratio, block, num_blocks, args = setting
-        
-        # Stages 0 and 1 (stem and stage 2 in diagram) are standard YOLOv8CSPLayer
-        if stage_idx < 2:
-            return super()._build_stage_layer(stage_idx, setting)
+        # Store architecture scaling factors
+        self.deepen_factor = deepen_factor
+        self.widen_factor = widen_factor
 
-        # For Stages 3 and 4 (stage_idx 2 and 3), we build them with SOM
-        block_name = f'stage{stage_idx + 1}'
-        in_channels = self.channels[stage_idx]
-        out_channels = int(self.channels[stage_idx + 1] * self.widen_factor)
+        # Define the channel progression for each stage output
+        # Based on a medium-sized model like YOLOv8-s/m
+        channels_settings = {
+            'P5': [64, 128, 256, 512, 512]
+        }
+        self.channels = [
+            make_divisible(c, widen_factor) for c in channels_settings[arch]
+        ]
         
-        # This is where we create the custom block sequence
-        # It consists of multiple SOM modules followed by one CSPLayer
-        print(f"--- Building {block_name} with {num_blocks} StarOperationModules ---")
+        # Define block counts for CSPLayers
+        num_blocks_settings = {
+            'P5': [3, 6, 6, 3]
+        }
+        self.num_blocks = [
+            round(n * deepen_factor) for n in num_blocks_settings[arch]
+        ]
+
+        # --- Build Network Stage-by-Stage to Match Paper's Figure 2 ---
+
+        # 1. Stem Layer (initial convolution)
+        # Input: 640x640x3
+        self.stem = ConvModule(
+            self.in_channels,
+            self.channels[0],
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+        # Output: 320x320x64
+
+        # 2. Stage 1 (Standard YOLOv8 Block)
+        self.stage1 = nn.Sequential(
+            ConvModule(
+                self.channels[0], self.channels[0], 3, stride=2, padding=1, norm_cfg=norm_cfg, act_cfg=act_cfg),
+            YOLOv8CSPLayer(
+                self.channels[0], self.channels[0], num_blocks=self.num_blocks[0], add_identity=True, use_depthwise=use_depthwise, norm_cfg=norm_cfg, act_cfg=act_cfg)
+        )
+        # Output: 160x160x64
         
-        layers = []
-        # Create the repeated SOM blocks
-        for i in range(num_blocks):
-            layers.append(
-                StarOperationModule(
-                    in_channels=in_channels if i == 0 else out_channels,
-                    out_channels=out_channels,
-                    expand_ratio=3 # As per the SOM paper
-                )
-            )
-        
-        # The diagram shows a CSPLayer after the SOM blocks in Stage 3 and 4
-        # We use the standard mmdet CSPLayer here
-        layers.append(
-            CSPLayer(
-                in_channels=out_channels,
-                out_channels=out_channels,
-                num_blocks=3, # A reasonable default, matching YOLOv8-s
-                add_identity=True,
-                use_depthwise=self.use_depthwise
+        # 3. Stage 2 (Standard YOLOv8 Block)
+        self.stage2 = nn.Sequential(
+            ConvModule(
+                self.channels[0], self.channels[1], 3, stride=2, padding=1, norm_cfg=norm_cfg, act_cfg=act_cfg),
+            YOLOv8CSPLayer(
+                self.channels[1], self.channels[1], num_blocks=self.num_blocks[1], add_identity=True, use_depthwise=use_depthwise, norm_cfg=norm_cfg, act_cfg=act_cfg)
+        )
+        # Output: 80x80x128 (This is the first feature map sent to the neck)
+
+        # 4. Stage 3 (CUSTOM STAGE WITH SOM)
+        # According to Figure 2, this stage contains 8 SOM modules and a CSPLayer
+        self.stage3 = nn.Sequential(
+            # First, a downsampling convolution
+            ConvModule(
+                self.channels[1], self.channels[2], 3, stride=2, padding=1, norm_cfg=norm_cfg, act_cfg=act_cfg),
+            # Then, 8 Star Operation Modules (×8)
+            *[StarOperationModule(
+                in_channels=self.channels[2],
+                out_channels=self.channels[2],
+            ) for _ in range(8)],
+            # Followed by a standard CSPLayer
+            YOLOv8CSPLayer(
+                self.channels[2], self.channels[2], num_blocks=self.num_blocks[2], add_identity=True, use_depthwise=use_depthwise, norm_cfg=norm_cfg, act_cfg=act_cfg)
+        )
+        # Output: 40x40x256 (This is the second feature map sent to the neck)
+
+        # 5. Stage 4 (CUSTOM STAGE WITH SOM)
+        # This stage contains 5 SOM modules, a CSPLayer, and SPPF
+        self.stage4 = nn.Sequential(
+             # First, a downsampling convolution
+            ConvModule(
+                self.channels[2], self.channels[3], 3, stride=2, padding=1, norm_cfg=norm_cfg, act_cfg=act_cfg),
+            # Then, 5 Star Operation Modules (×5)
+            *[StarOperationModule(
+                in_channels=self.channels[3],
+                out_channels=self.channels[3],
+            ) for _ in range(5)],
+            # Followed by a standard CSPLayer
+            YOLOv8CSPLayer(
+                self.channels[3], self.channels[3], num_blocks=self.num_blocks[3], add_identity=True, use_depthwise=use_depthwise, norm_cfg=norm_cfg, act_cfg=act_cfg),
+            # Finally, SPPF module
+            SPPFBottleneck(
+                in_channels=self.channels[3],
+                out_channels=self.channels[3],
+                kernel_sizes=5,
+                norm_cfg=norm_cfg,
+                act_cfg=act_cfg
             )
         )
+        # Output: 20x20x512 (This is the third feature map sent to the neck)
+
+        # We don't use the original _build_stem_layer or _build_stage_layer methods
+        # because we have defined the full architecture manually above.
+
+    def forward(self, x):
+        """
+        Forward pass through the SOM-Backbone.
+        Returns a tuple of feature maps for the neck.
+        """
+        x = self.stem(x)
+        out0 = self.stage1(x)    # Output for Neck (P2), size: 160x160x64
+        out1 = self.stage2(out0) # Output for Neck (P3), size: 80x80x128
+        out2 = self.stage3(out1) # Output for Neck (P4), size: 40x40x256
+        out3 = self.stage4(out2) # Output for Neck (P5), size: 20x20x512
         
-        return [self.add_module(f'{block_name}', nn.Sequential(*layers))]
+        return (out0, out1, out2, out3)
