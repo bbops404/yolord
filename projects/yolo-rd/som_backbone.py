@@ -4,9 +4,10 @@ import torch.nn as nn
 from mmcv.cnn import ConvModule
 
 from mmyolo.registry import MODELS
-from mmyolo.models.backbones.yolov8_csp_darknet import YOLOv8CSPDarknet, YOLOv8CSPLayer
+from mmyolo.models.backbones.csp_darknet import YOLOv8CSPDarknet
+from mmdet.models.backbones.csp_darknet import CSPLayer as YOLOv8CSPLayer
 from mmyolo.models.layers.yolo_bricks import SPPFBottleneck
-from mmdet.models.utils import make_divisible
+from mmyolo.models.utils import make_divisible
 from .star_operation_module import StarOperationModule
 
 
@@ -26,18 +27,31 @@ class SOM_YOLOv8CSPDarknet(YOLOv8CSPDarknet):
                  last_stage_out_channels=1024,
                  deepen_factor=1.0,
                  widen_factor=1.0,
+                 input_channels=3,
+                 out_indices=(2, 3, 4),
+                 frozen_stages=-1,
                  norm_cfg=dict(type='BN', momentum=0.03, eps=0.001),
                  act_cfg=dict(type='SiLU', inplace=True),
                  use_depthwise=False,
                  **kwargs):
         
-        # We call the grandparent's init to skip the original layer building,
-        # as we are defining the entire architecture manually here.
-        super(YOLOv8CSPDarknet, self).__init__(**kwargs)
+        # We call the parent's init to properly initialize the base backbone
+        super().__init__(
+            arch=arch,
+            last_stage_out_channels=last_stage_out_channels,
+            deepen_factor=deepen_factor,
+            widen_factor=widen_factor,
+            input_channels=input_channels,
+            out_indices=out_indices,
+            frozen_stages=frozen_stages,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg,
+            **kwargs)
 
         # Store architecture scaling factors
         self.deepen_factor = deepen_factor
         self.widen_factor = widen_factor
+        self.input_channels = input_channels
 
         # Define the channel progression for each stage output
         # Based on a medium-sized model like YOLOv8-s/m
@@ -45,7 +59,7 @@ class SOM_YOLOv8CSPDarknet(YOLOv8CSPDarknet):
             'P5': [64, 128, 256, 512, 512]
         }
         self.channels = [
-            make_divisible(c, widen_factor) for c in channels_settings[arch]
+            int(make_divisible(c, widen_factor)) for c in channels_settings[arch]
         ]
         
         # Define block counts for CSPLayers
@@ -61,7 +75,7 @@ class SOM_YOLOv8CSPDarknet(YOLOv8CSPDarknet):
         # 1. Stem Layer (initial convolution)
         # Input: 640x640x3
         self.stem = ConvModule(
-            self.in_channels,
+            input_channels,
             self.channels[0],
             kernel_size=3,
             stride=2,

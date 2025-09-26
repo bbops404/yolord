@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 from mmcv.cnn import ConvModule
-from mmcv.runner import BaseModule
+from mmengine.model import BaseModule
 
-from mmyolo.registry import BACKBONES
+from mmyolo.registry import MODELS
 
-@BACKBONES.register_module()
+@MODELS.register_module()
 class StarOperationModule(BaseModule):
     """Star Operation Module (SOM) as described in the paper.
 

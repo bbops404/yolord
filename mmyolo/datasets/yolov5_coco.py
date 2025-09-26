@@ -1,5 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from typing import Any, Optional
+from pycocotools.coco import COCO
+import os
 
 from mmdet.datasets import BaseDetDataset, CocoDataset
 
@@ -57,6 +59,42 @@ class BatchShapePolicyDataset(BaseDetDataset):
 
 @DATASETS.register_module()
 class YOLOv5CocoDataset(BatchShapePolicyDataset, CocoDataset):
+    def _ensure_coco_loaded(self):
+        """Ensure COCO object is loaded and instances are populated."""
+        if not hasattr(self, 'coco') or self.coco is None:
+            # Load COCO object
+            ann_file_path = os.path.join(self.data_root, self.ann_file)
+            self.coco = COCO(ann_file_path)
+            print(f"Loaded COCO object with {len(self.coco.anns)} annotations")
+
+    def load_data_list(self):
+        """Load data list and ensure instances are populated."""
+        # Call parent method
+        data_list = super().load_data_list()
+        
+        # Ensure COCO object is loaded
+        self._ensure_coco_loaded()
+        
+        # Populate instances for each data item
+        for data_item in data_list:
+            if 'instances' not in data_item or not data_item['instances']:
+                img_id = data_item['img_id']
+                ann_ids = self.coco.getAnnIds(imgIds=[img_id])
+                
+                if ann_ids:
+                    anns = self.coco.loadAnns(ann_ids)
+                    instances = []
+                    for ann in anns:
+                        instance = {
+                            'bbox': ann['bbox'],
+                            'bbox_label': ann['category_id'],
+                            'ignore_flag': ann.get('iscrowd', 0)
+                        }
+                        instances.append(instance)
+                    data_item['instances'] = instances
+        
+        return data_list
+
     """Dataset for YOLOv5 COCO Dataset.
 
     We only add `BatchShapePolicy` function compared with CocoDataset. See
